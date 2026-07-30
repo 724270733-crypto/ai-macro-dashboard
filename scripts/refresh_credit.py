@@ -379,7 +379,7 @@ def write_dashboard_files() -> None:
         json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
         encoding="utf-8",
     )
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
     for item in manifest["files"]:
         if item["file"] == "credit.json":
             item["bytes"] = data_path.stat().st_size
@@ -392,6 +392,8 @@ def write_dashboard_files() -> None:
         json.dumps(manifest, ensure_ascii=False, separators=(",", ":")),
         encoding="utf-8",
     )
+    from build_local_bundle import write_local_bundle
+    write_local_bundle()
     print(f"Wrote {data_path} ({data_path.stat().st_size:,} bytes)")
 
 
@@ -400,4 +402,3 @@ if __name__ == "__main__":
         write_dashboard_files()
     else:
         print(json.dumps(build_credit_snapshot(), ensure_ascii=False))
-
