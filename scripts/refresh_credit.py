@@ -13,6 +13,7 @@ import csv
 import io
 import json
 import os
+import sys
 import statistics
 import urllib.parse
 import urllib.request
@@ -223,19 +224,50 @@ def _yahoo_history(ticker: str) -> list[dict[str, Any]]:
     return rows
 
 
+def _akshare_history(ticker: str) -> list[dict[str, Any]]:
+    """Fetch US daily prices through AKShare's documented stock_us_daily."""
+    import akshare as ak
+
+    frame = ak.stock_us_daily(symbol=ticker, adjust="")
+    if frame is None or frame.empty:
+        return []
+    cutoff = date.today() - timedelta(days=760)
+    rows = []
+    for _, row in frame.iterrows():
+        day = row.get("date")
+        close = row.get("close")
+        if day is None or close is None:
+            continue
+        day_text = day.strftime("%Y-%m-%d") if hasattr(day, "strftime") else str(day)[:10]
+        try:
+            if date.fromisoformat(day_text) < cutoff:
+                continue
+            rows.append({"date": day_text, "close": round(float(close), 4)})
+        except (TypeError, ValueError):
+            continue
+    return rows
+
+
 def _market_payload() -> tuple[list[dict[str, Any]], list[dict[str, Any]], str]:
     tushare_rows, tushare_status = _tushare_market_data()
     if tushare_rows:
         return tushare_rows, [], "Tushare Pro"
     series = []
     snapshot = []
+    source_counts = {"AKShare": 0, "Yahoo Finance公开行情": 0}
     for ticker, (label, group) in MARKET_PROXIES.items():
         try:
-            rows = _yahoo_history(ticker)
+            rows = _akshare_history(ticker)
+            source = "AKShare / 新浪财经美股"
         except Exception:
-            continue
+            try:
+                rows = _yahoo_history(ticker)
+                source = "Yahoo Finance公开行情"
+            except Exception:
+                continue
         if not rows:
             continue
+        source_counts["AKShare" if source.startswith("AKShare") else "Yahoo Finance公开行情"] += 1
         closes = [row["close"] for row in rows]
         last = closes[-1]
         change_5d = round((last / closes[-6] - 1) * 100, 2) if len(closes) > 5 else None
@@ -245,7 +277,7 @@ def _market_payload() -> tuple[list[dict[str, Any]], list[dict[str, Any]], str]:
         position = round(100 * (last - low) / (high - low), 1) if high > low else None
         series.append({
             "ticker": ticker, "label": label, "group": group,
-            "source": "Yahoo Finance公开行情", "data": _thin(rows),
+            "source": source, "data": _thin(rows),
         })
         snapshot.append({
             "ticker": ticker, "label": label, "group": group,
@@ -253,9 +285,14 @@ def _market_payload() -> tuple[list[dict[str, Any]], list[dict[str, Any]], str]:
             "weekly_change_pct": change_5d,
             "monthly_change_pct": change_21d,
             "position_52w": position,
-            "source": "Yahoo Finance公开行情",
+            "source": source,
         })
-    return series, snapshot, f"public_fallback_after_{tushare_status}"
+    return (
+        series,
+        snapshot,
+        f"akshare_{source_counts['AKShare']}_yahoo_{source_counts['Yahoo Finance公开行情']}"
+        f"_after_tushare_{tushare_status}",
+    )
 
 
 def _signal(snapshot: list[dict[str, Any]], markets: list[dict[str, Any]]) -> dict[str, Any]:
@@ -305,11 +342,11 @@ def build_credit_snapshot() -> dict[str, Any]:
             },
             {
                 "domain": "BDC、另类资管、区域银行市场映射",
-                "source": "Tushare Pro → iFinD QuantAPI → Yahoo Finance公开行情",
+                "source": "Tushare Pro → iFinD QuantAPI → AKShare → Yahoo Finance",
                 "frequency": "日度",
                 "method": market_status,
                 "confidence": "中",
-                "url": "https://finance.yahoo.com/",
+                "url": "https://akshare.akfamily.xyz/data/stock/stock.html",
             },
             {
                 "domain": "违约、非应计贷款与NAV验证",
@@ -333,6 +370,32 @@ def build_credit_snapshot() -> dict[str, Any]:
     }
 
 
+def write_dashboard_files() -> None:
+    root = __import__("pathlib").Path(__file__).resolve().parents[1]
+    data_path = root / "data" / "credit.json"
+    manifest_path = root / "data" / "manifest.json"
+    payload = build_credit_snapshot()
+    data_path.write_text(
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    for item in manifest["files"]:
+        if item["file"] == "credit.json":
+            item["bytes"] = data_path.stat().st_size
+            break
+    else:
+        manifest["files"].insert(-1, {"file": "credit.json", "bytes": data_path.stat().st_size})
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    print(f"Wrote {data_path} ({data_path.stat().st_size:,} bytes)")
+
+
 if __name__ == "__main__":
-    print(json.dumps(build_credit_snapshot(), ensure_ascii=False))
+    if "--write-dashboard" in sys.argv:
+        write_dashboard_files()
+    else:
+        print(json.dumps(build_credit_snapshot(), ensure_ascii=False))
 
