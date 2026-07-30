@@ -24,6 +24,7 @@ from typing import Any, Iterable
 
 from openpyxl import load_workbook
 from refresh_credit import build_credit_snapshot
+from build_local_bundle import write_local_bundle
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "data" / "dashboard-data.json"
@@ -522,9 +523,9 @@ def main():
         ),
         encoding="utf-8",
     )
+    write_local_bundle(data)
     print(f"Wrote {OUT} ({OUT.stat().st_size:,} bytes)")
 
 
 if __name__ == "__main__":
     main()
-
