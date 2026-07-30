@@ -77,6 +77,11 @@
   </main>
   <footer class="footer"><div class="wrap"><b>AI × MACRO RESEARCH COCKPIT</b><p>仅用于研究与数据跟踪，不构成投资建议。第三方许可数据仅展示工作簿已有缓存和必要摘要，不重新分发原始数据库。</p></div></footer>
   <script>
+  if(location.protocol==='file:'){
+    document.write('<script src="data/dashboard-data.js"><\/script>');
+  }
+  </script>
+  <script>
   const $=id=>document.getElementById(id), C=['#e1682f','#2e7bb7','#278069','#7a62a7','#b9893e','#c94848','#4f91a8'];
   const num=(v,d=1)=>v==null?'—':new Intl.NumberFormat('zh-CN',{maximumFractionDigits:d}).format(v);
   const compact=v=>v==null?'—':new Intl.NumberFormat('zh-CN',{notation:'compact',maximumFractionDigits:1}).format(v);
@@ -91,10 +96,16 @@
   function normalizeSeries(rows,key,maxPoints=420){const dk=dateKey(rows),valid=rows.filter(r=>r[dk]&&typeof r[key]==='number');const step=Math.max(1,Math.ceil(valid.length/maxPoints));return valid.filter((_,i)=>i%step===0||i===valid.length-1).map(r=>({x:dateStr(r[dk]),y:r[key]}))}
   function firstText(rec,patterns){const k=Object.keys(rec||{}).find(k=>patterns.some(p=>p.test(k)));return k?rec[k]:null}
   async function boot(){
-    const manifest=await fetch(`data/manifest.json?t=${Date.now()}`,{cache:'no-store'}).then(r=>{if(!r.ok)throw Error(r.status);return r.json()});
-    const dataVersion=encodeURIComponent(manifest.version||Date.now());
-    const shards=await Promise.all(manifest.files.map(x=>fetch(`data/${x.file}?v=${dataVersion}`,{cache:'no-store'}).then(r=>{if(!r.ok)throw Error(`${x.file}:${r.status}`);return r.json()})));
-    const d=Object.assign({},...shards);
+    let d;
+    if(location.protocol==='file:'){
+      if(!window.__DASHBOARD_DATA__)throw Error('本地数据包不存在，请运行数据刷新脚本');
+      d=window.__DASHBOARD_DATA__;
+    }else{
+      const manifest=await fetch(`data/manifest.json?t=${Date.now()}`,{cache:'no-store'}).then(r=>{if(!r.ok)throw Error(r.status);return r.json()});
+      const dataVersion=encodeURIComponent(manifest.version||Date.now());
+      const shards=await Promise.all(manifest.files.map(x=>fetch(`data/${x.file}?v=${dataVersion}`,{cache:'no-store'}).then(r=>{if(!r.ok)throw Error(`${x.file}:${r.status}`);return r.json()})));
+      d=Object.assign({},...shards);
+    }
     $('stamp').textContent=`公开研究版 · ${d.metadata.generated_at.slice(0,10)}`;$('score').textContent=d.narrative.score;$('scorebar').style.width=`${d.narrative.score}%`;$('summary').textContent=d.narrative.summary;$('stage').textContent=d.narrative.current_stage;$('stageWhy').textContent='当前主线仍是需求、投资与交付扩张；研究重心正从“是否投入”转向“收入、利润和现金回报能否覆盖持续投入”。';
     const latest=d.token.at(-1),week=d.token.at(-8)||d.token[0],tokenDelta=(latest.total_tokens/week.total_tokens-1)*100;
     $('ribbon').innerHTML=[['Token样本 / 最新日',`${num(latest.total_tokens/1e12,1)}T`,`${tokenDelta>=0?'+':''}${num(tokenDelta,1)}% / 7日`],['Similarweb应用',d.similarweb.length,'月度参与度'],['模型横向样本',d.model_benchmarks.length,'Artificial Analysis'],['ODM月度记录',d.odm_monthly.length,'交付代理'],['价格序列',d.memory_spot.length+d.memory_contract.length,'存储现货+合约'],['公司模型记录',d.company_models.length,'2024A—2028E']].map(x=>`<article><span>${x[0]}</span><b>${x[1]}</b><small>${x[2]}</small></article>`).join('');
@@ -131,4 +142,3 @@
   </script>
 </body>
 </html>
-
