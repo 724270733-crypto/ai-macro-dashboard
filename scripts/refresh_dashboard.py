@@ -515,7 +515,11 @@ def main():
         )
         manifest.append({"file": filename, "bytes": path.stat().st_size})
     (OUT.parent / "manifest.json").write_text(
-        json.dumps({"files": manifest}, ensure_ascii=False, separators=(",", ":")),
+        json.dumps(
+            {"version": datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"), "files": manifest},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ),
         encoding="utf-8",
     )
     print(f"Wrote {OUT} ({OUT.stat().st_size:,} bytes)")
