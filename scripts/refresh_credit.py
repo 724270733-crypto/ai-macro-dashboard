@@ -386,6 +386,8 @@ def write_dashboard_files() -> None:
             break
     else:
         manifest["files"].insert(-1, {"file": "credit.json", "bytes": data_path.stat().st_size})
+    from datetime import datetime, timezone
+    manifest["version"] = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     manifest_path.write_text(
         json.dumps(manifest, ensure_ascii=False, separators=(",", ":")),
         encoding="utf-8",
