@@ -1,0 +1,44 @@
+name: Refresh credit dashboard
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "35 22 * * 1-5"
+  push:
+    paths:
+      - "scripts/refresh_credit.py"
+      - "requirements-credit.txt"
+      - ".github/workflows/refresh-credit.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: refresh-credit-dashboard
+  cancel-in-progress: true
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install AKShare
+        run: pip install -r requirements-credit.txt
+      - name: Refresh FRED and US market proxies
+        run: python scripts/refresh_credit.py --write-dashboard
+      - name: Commit refreshed snapshot
+        run: |
+          if git diff --quiet -- data/credit.json data/manifest.json; then
+            echo "No data changes"
+            exit 0
+          fi
+          git config user.name "ai-macro-dashboard-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add data/credit.json data/manifest.json
+          git commit -m "Refresh credit dashboard data"
+          git push
+
