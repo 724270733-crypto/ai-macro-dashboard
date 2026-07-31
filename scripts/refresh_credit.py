@@ -18,6 +18,7 @@ import statistics
 import urllib.parse
 import urllib.request
 from datetime import date, timedelta
+from pathlib import Path
 from typing import Any
 
 
@@ -248,14 +249,44 @@ def _akshare_history(ticker: str) -> list[dict[str, Any]]:
     return rows
 
 
+def _cached_market_payload() -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+    """Load the broadest previous snapshot so a partial API failure does not shrink coverage."""
+    root = Path(__file__).resolve().parents[1]
+    candidates: list[dict[str, Any]] = []
+    credit_path = root / "data" / "credit.json"
+    if credit_path.exists():
+        try:
+            candidates.append(json.loads(credit_path.read_text(encoding="utf-8-sig")))
+        except Exception:
+            pass
+    bundle_path = root / "data" / "dashboard-data.js"
+    if bundle_path.exists():
+        try:
+            text = bundle_path.read_text(encoding="utf-8-sig").strip()
+            prefix = "window.__DASHBOARD_DATA__="
+            if text.startswith(prefix):
+                candidates.append(json.loads(text[len(prefix):].removesuffix(";")))
+        except Exception:
+            pass
+    if not candidates:
+        return {}, {}
+    cached = max(candidates, key=lambda item: len(item.get("credit_market_snapshot") or []))
+    series = {item["ticker"]: item for item in cached.get("credit_market_series") or []}
+    snapshot = {item["ticker"]: item for item in cached.get("credit_market_snapshot") or []}
+    return series, snapshot
+
+
 def _market_payload() -> tuple[list[dict[str, Any]], list[dict[str, Any]], str]:
     tushare_rows, tushare_status = _tushare_market_data()
     if tushare_rows:
         return tushare_rows, [], "Tushare Pro"
     series = []
     snapshot = []
-    source_counts = {"AKShare": 0, "Yahoo Finance公开行情": 0}
+    cached_series, cached_snapshot = _cached_market_payload()
+    source_counts = {"AKShare": 0, "Yahoo Finance公开行情": 0, "cached": 0}
     for ticker, (label, group) in MARKET_PROXIES.items():
+        rows = []
+        source = ""
         try:
             rows = _akshare_history(ticker)
             source = "AKShare / 新浪财经美股"
@@ -264,7 +295,16 @@ def _market_payload() -> tuple[list[dict[str, Any]], list[dict[str, Any]], str]:
                 rows = _yahoo_history(ticker)
                 source = "Yahoo Finance公开行情"
             except Exception:
-                continue
+                pass
+        if not rows and ticker in cached_series and ticker in cached_snapshot:
+            old_series = dict(cached_series[ticker])
+            old_snapshot = dict(cached_snapshot[ticker])
+            old_series["source"] = f"{old_series.get('source', '公开行情')}（上次有效快照）"
+            old_snapshot["source"] = f"{old_snapshot.get('source', '公开行情')}（上次有效快照）"
+            series.append(old_series)
+            snapshot.append(old_snapshot)
+            source_counts["cached"] += 1
+            continue
         if not rows:
             continue
         source_counts["AKShare" if source.startswith("AKShare") else "Yahoo Finance公开行情"] += 1
@@ -291,7 +331,7 @@ def _market_payload() -> tuple[list[dict[str, Any]], list[dict[str, Any]], str]:
         series,
         snapshot,
         f"akshare_{source_counts['AKShare']}_yahoo_{source_counts['Yahoo Finance公开行情']}"
-        f"_after_tushare_{tushare_status}",
+        f"_cached_{source_counts['cached']}_after_tushare_{tushare_status}",
     )
 
 
@@ -392,13 +432,62 @@ def write_dashboard_files() -> None:
         json.dumps(manifest, ensure_ascii=False, separators=(",", ":")),
         encoding="utf-8",
     )
+    scripts_dir = root / "scripts"
+    if str(scripts_dir) not in sys.path:
+        sys.path.insert(0, str(scripts_dir))
     from build_local_bundle import write_local_bundle
     write_local_bundle()
     print(f"Wrote {data_path} ({data_path.stat().st_size:,} bytes)")
 
 
+def repair_cached_coverage() -> None:
+    """Restore temporarily missing market proxies from the last broader valid snapshot."""
+    root = Path(__file__).resolve().parents[1]
+    data_path = root / "data" / "credit.json"
+    payload = json.loads(data_path.read_text(encoding="utf-8-sig"))
+    cached_series, cached_snapshot = _cached_market_payload()
+    series_map = {item["ticker"]: item for item in payload.get("credit_market_series") or []}
+    snapshot_map = {item["ticker"]: item for item in payload.get("credit_market_snapshot") or []}
+    restored = 0
+    for ticker in MARKET_PROXIES:
+        if ticker in series_map and ticker in snapshot_map:
+            continue
+        if ticker not in cached_series or ticker not in cached_snapshot:
+            continue
+        old_series = dict(cached_series[ticker])
+        old_snapshot = dict(cached_snapshot[ticker])
+        old_series["source"] = f"{old_series.get('source', '公开行情')}（上次有效快照）"
+        old_snapshot["source"] = f"{old_snapshot.get('source', '公开行情')}（上次有效快照）"
+        series_map[ticker] = old_series
+        snapshot_map[ticker] = old_snapshot
+        restored += 1
+    payload["credit_market_series"] = [series_map[ticker] for ticker in MARKET_PROXIES if ticker in series_map]
+    payload["credit_market_snapshot"] = [snapshot_map[ticker] for ticker in MARKET_PROXIES if ticker in snapshot_map]
+    payload["credit_signal"] = _signal(payload.get("credit_snapshot") or [], payload["credit_market_snapshot"])
+    status = payload.get("credit_metadata", {}).get("tushare_us_daily", "partial_refresh")
+    payload.setdefault("credit_metadata", {})["tushare_us_daily"] = f"{status}_cached_{restored}"
+    data_path.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+
+    manifest_path = root / "data" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+    for item in manifest["files"]:
+        if item["file"] == "credit.json":
+            item["bytes"] = data_path.stat().st_size
+    from datetime import datetime, timezone
+    manifest["version"] = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    scripts_dir = root / "scripts"
+    if str(scripts_dir) not in sys.path:
+        sys.path.insert(0, str(scripts_dir))
+    from build_local_bundle import write_local_bundle
+    write_local_bundle()
+    print(f"Restored {restored} cached market proxies; coverage={len(payload['credit_market_snapshot'])}")
+
+
 if __name__ == "__main__":
     if "--write-dashboard" in sys.argv:
         write_dashboard_files()
+    elif "--repair-cache" in sys.argv:
+        repair_cached_coverage()
     else:
         print(json.dumps(build_credit_snapshot(), ensure_ascii=False))
